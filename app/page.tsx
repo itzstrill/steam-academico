@@ -22,7 +22,7 @@ type Perfil = {
   auth_id: string | null;
   nombre_usuario: string;
   correo: string;
-  rol: "usuario" | "admin";
+  rol: "usuario" | "cliente" | "desarrollador" | "admin";
   fecha_registro: string;
 };
 
@@ -56,6 +56,7 @@ export default function Home() {
   const [view, setView] = useState<"store" | "cart" | "admin" | "auth">(
     "store"
   );
+
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState("");
 
@@ -82,26 +83,55 @@ export default function Home() {
   });
 
   useEffect(() => {
-    loadData();
-    checkCurrentSession();
+    startApp();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        setCurrentUser(session.user);
-        const userProfile = await ensureProfile(session.user);
-        setProfile(userProfile);
-      } else {
-        setCurrentUser(null);
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const user = session?.user ?? null;
+      setCurrentUser(user);
+
+      if (!user) {
         setProfile(null);
+        return;
       }
+
+      setTimeout(async () => {
+        const userProfile = await ensureProfile(user);
+        setProfile(userProfile);
+      }, 0);
     });
 
     return () => {
       subscription.unsubscribe();
     };
   }, []);
+
+  async function startApp() {
+    setLoading(true);
+    setConnectionError("");
+
+    const safetyTimeout = setTimeout(() => {
+      setLoading(false);
+      setConnectionError(
+        "La carga tardó demasiado. Es posible que la sesión de Supabase se haya quedado atorada. Prueba cerrar sesión de emergencia o revisar la conexión."
+      );
+    }, 15000);
+
+    try {
+      await loadData();
+      await checkCurrentSession();
+      clearTimeout(safetyTimeout);
+      setLoading(false);
+    } catch (error) {
+      clearTimeout(safetyTimeout);
+      console.error("Error al iniciar aplicación:", error);
+      setConnectionError(
+        error instanceof Error ? error.message : String(error)
+      );
+      setLoading(false);
+    }
+  }
 
   function formatSupabaseError(error: unknown) {
     if (!error) return "Error desconocido";
@@ -118,20 +148,25 @@ export default function Home() {
 
     if (error) {
       console.error("Error al revisar sesión:", error);
+      setCurrentUser(null);
+      setProfile(null);
       return;
     }
 
-    if (data.session?.user) {
-      setCurrentUser(data.session.user);
-      const userProfile = await ensureProfile(data.session.user);
-      setProfile(userProfile);
+    const user = data.session?.user ?? null;
+    setCurrentUser(user);
+
+    if (!user) {
+      setProfile(null);
+      return;
     }
+
+    const userProfile = await ensureProfile(user);
+    setProfile(userProfile);
   }
 
   async function ensureProfile(user: User): Promise<Perfil | null> {
-    if (!user.email) {
-      return null;
-    }
+    if (!user.email) return null;
 
     const correo = user.email.toLowerCase();
     const nombre =
@@ -178,7 +213,7 @@ export default function Home() {
         .single();
 
       if (errorUpdate) {
-        console.error("Error actualizando auth_id del perfil:", errorUpdate);
+        console.error("Error actualizando auth_id:", errorUpdate);
         return perfilExistente;
       }
 
@@ -191,7 +226,7 @@ export default function Home() {
         auth_id: user.id,
         nombre_usuario: nombre,
         correo: correo,
-        rol: "usuario",
+        rol: "cliente",
       })
       .select("*")
       .single();
@@ -205,88 +240,96 @@ export default function Home() {
   }
 
   async function loadData() {
-    setLoading(true);
     setConnectionError("");
 
-    try {
-      const { data: categoriasData, error: categoriasError } = await supabase
-        .from("categoria")
-        .select("*")
-        .order("nombre_categoria", { ascending: true });
+    const { data: categoriasData, error: categoriasError } = await supabase
+      .from("categoria")
+      .select("*")
+      .order("nombre_categoria", { ascending: true });
 
-      if (categoriasError) {
-        throw new Error(
-          "Error al cargar categorías:\n" +
-            formatSupabaseError(categoriasError)
-        );
-      }
-
-      const { data: desarrolladoresData, error: desarrolladoresError } =
-        await supabase
-          .from("desarrollador")
-          .select("*")
-          .order("nombre_desarrollador", { ascending: true });
-
-      if (desarrolladoresError) {
-        throw new Error(
-          "Error al cargar desarrolladores:\n" +
-            formatSupabaseError(desarrolladoresError)
-        );
-      }
-
-      const { data: videojuegosData, error: videojuegosError } = await supabase
-        .from("videojuego")
-        .select("*")
-        .eq("activo", true)
-        .order("id_videojuego", { ascending: true });
-
-      if (videojuegosError) {
-        throw new Error(
-          "Error al cargar videojuegos:\n" +
-            formatSupabaseError(videojuegosError)
-        );
-      }
-
-      const categorias = (categoriasData || []) as Categoria[];
-      const desarrolladores = (desarrolladoresData || []) as Desarrollador[];
-      const videojuegos = (videojuegosData || []) as VideojuegoBD[];
-
-      const juegosCompletos: Game[] = videojuegos.map((juego) => {
-        const categoria = categorias.find(
-          (cat) => cat.id_categoria === juego.id_categoria
-        );
-
-        const desarrollador = desarrolladores.find(
-          (dev) => dev.id_desarrollador === juego.id_desarrollador
-        );
-
-        return {
-          ...juego,
-          nombre_categoria: categoria
-            ? categoria.nombre_categoria
-            : "Sin categoría",
-          nombre_desarrollador: desarrollador
-            ? desarrollador.nombre_desarrollador
-            : "Sin desarrollador",
-        };
-      });
-
-      setCategories(categorias);
-      setDevelopers(desarrolladores);
-      setGames(juegosCompletos);
-
-      if (juegosCompletos.length > 0) {
-        setSelectedGame(juegosCompletos[0]);
-      } else {
-        setSelectedGame(null);
-      }
-    } catch (error) {
-      console.error("Error general al cargar datos:", error);
-      setConnectionError(
-        error instanceof Error ? error.message : String(error)
+    if (categoriasError) {
+      throw new Error(
+        "Error al cargar categorías:\n" + formatSupabaseError(categoriasError)
       );
-    } finally {
+    }
+
+    const { data: desarrolladoresData, error: desarrolladoresError } =
+      await supabase
+        .from("desarrollador")
+        .select("*")
+        .order("nombre_desarrollador", { ascending: true });
+
+    if (desarrolladoresError) {
+      throw new Error(
+        "Error al cargar desarrolladores:\n" +
+          formatSupabaseError(desarrolladoresError)
+      );
+    }
+
+    const { data: videojuegosData, error: videojuegosError } = await supabase
+      .from("videojuego")
+      .select("*")
+      .eq("activo", true)
+      .order("id_videojuego", { ascending: true });
+
+    if (videojuegosError) {
+      throw new Error(
+        "Error al cargar videojuegos:\n" + formatSupabaseError(videojuegosError)
+      );
+    }
+
+    const categorias = (categoriasData || []) as Categoria[];
+    const desarrolladores = (desarrolladoresData || []) as Desarrollador[];
+    const videojuegos = (videojuegosData || []) as VideojuegoBD[];
+
+    const juegosCompletos: Game[] = videojuegos.map((juego) => {
+      const categoria = categorias.find(
+        (cat) => cat.id_categoria === juego.id_categoria
+      );
+
+      const desarrollador = desarrolladores.find(
+        (dev) => dev.id_desarrollador === juego.id_desarrollador
+      );
+
+      return {
+        ...juego,
+        nombre_categoria: categoria
+          ? categoria.nombre_categoria
+          : "Sin categoría",
+        nombre_desarrollador: desarrollador
+          ? desarrollador.nombre_desarrollador
+          : "Sin desarrollador",
+      };
+    });
+
+    setCategories(categorias);
+    setDevelopers(desarrolladores);
+    setGames(juegosCompletos);
+
+    if (juegosCompletos.length > 0) {
+      setSelectedGame(juegosCompletos[0]);
+    } else {
+      setSelectedGame(null);
+    }
+  }
+
+  async function emergencyLogout() {
+    try {
+      await supabase.auth.signOut();
+      localStorage.clear();
+      sessionStorage.clear();
+      setCurrentUser(null);
+      setProfile(null);
+      setCart([]);
+      setConnectionError("");
       setLoading(false);
+      setView("store");
+      location.reload();
+    } catch (error) {
+      console.error("Error en cierre de sesión de emergencia:", error);
+      localStorage.clear();
+      sessionStorage.clear();
+      location.reload();
     }
   }
 
@@ -324,7 +367,8 @@ export default function Home() {
     }
 
     if (data.user) {
-      await ensureProfile(data.user);
+      const userProfile = await ensureProfile(data.user);
+      setProfile(userProfile);
     }
 
     if (data.session?.user) {
@@ -392,8 +436,8 @@ export default function Home() {
     const { error } = await supabase.auth.signOut();
 
     if (error) {
-      alert("No se pudo cerrar sesión.");
-      console.error(error);
+      console.error("Error cerrando sesión:", error);
+      await emergencyLogout();
       return;
     }
 
@@ -500,8 +544,8 @@ export default function Home() {
   }
 
   async function addNewGame() {
-    if (profile?.rol !== "admin") {
-      alert("Solo un administrador puede agregar videojuegos.");
+    if (profile?.rol !== "admin" && profile?.rol !== "desarrollador") {
+      alert("Solo un administrador o desarrollador puede agregar videojuegos.");
       return;
     }
 
@@ -555,8 +599,8 @@ export default function Home() {
   }
 
   async function deactivateGame(id_videojuego: number) {
-    if (profile?.rol !== "admin") {
-      alert("Solo un administrador puede desactivar videojuegos.");
+    if (profile?.rol !== "admin" && profile?.rol !== "desarrollador") {
+      alert("Solo un administrador o desarrollador puede desactivar videojuegos.");
       return;
     }
 
@@ -611,7 +655,7 @@ export default function Home() {
               Carrito ({cart.length})
             </button>
 
-            {profile?.rol === "admin" && (
+            {(profile?.rol === "admin" || profile?.rol === "desarrollador") && (
               <button
                 onClick={() => setView("admin")}
                 className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
@@ -639,9 +683,9 @@ export default function Home() {
               <div className="flex flex-wrap items-center gap-3 rounded-xl bg-white/10 px-4 py-2">
                 <span className="text-sm text-slate-200">
                   {profile?.nombre_usuario || currentUser.email}
-                  {profile?.rol === "admin" && (
-                    <span className="ml-2 rounded-full bg-cyan-400 px-2 py-1 text-xs font-black text-slate-950">
-                      ADMIN
+                  {profile?.rol && (
+                    <span className="ml-2 rounded-full bg-cyan-400 px-2 py-1 text-xs font-black uppercase text-slate-950">
+                      {profile.rol}
                     </span>
                   )}
                 </span>
@@ -662,6 +706,13 @@ export default function Home() {
           <h2 className="text-3xl font-black text-cyan-300">
             Cargando videojuegos desde PostgreSQL...
           </h2>
+
+          <button
+            onClick={emergencyLogout}
+            className="mt-8 rounded-2xl bg-red-500/20 px-5 py-3 font-black text-red-100 hover:bg-red-500/30"
+          >
+            Cerrar sesión de emergencia
+          </button>
         </section>
       )}
 
@@ -669,19 +720,28 @@ export default function Home() {
         <section className="mx-auto max-w-5xl px-6 py-10">
           <div className="rounded-3xl border border-red-400/40 bg-red-500/10 p-6">
             <h2 className="mb-4 text-2xl font-black text-red-300">
-              Error de conexión con Supabase
+              Error de conexión o carga
             </h2>
 
             <pre className="max-h-96 overflow-auto rounded-2xl bg-black/40 p-4 text-sm text-red-100">
               {connectionError}
             </pre>
 
-            <button
-              onClick={loadData}
-              className="mt-5 rounded-2xl bg-cyan-400 px-5 py-3 font-black text-slate-950 hover:bg-cyan-300"
-            >
-              Reintentar conexión
-            </button>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                onClick={startApp}
+                className="rounded-2xl bg-cyan-400 px-5 py-3 font-black text-slate-950 hover:bg-cyan-300"
+              >
+                Reintentar conexión
+              </button>
+
+              <button
+                onClick={emergencyLogout}
+                className="rounded-2xl bg-red-500/20 px-5 py-3 font-black text-red-100 hover:bg-red-500/30"
+              >
+                Cerrar sesión de emergencia
+              </button>
+            </div>
           </div>
         </section>
       )}
@@ -694,9 +754,7 @@ export default function Home() {
                 Usuarios
               </p>
               <h2 className="mb-4 text-4xl font-black">
-                {authMode === "login"
-                  ? "Iniciar sesión"
-                  : "Crear una cuenta"}
+                {authMode === "login" ? "Iniciar sesión" : "Crear una cuenta"}
               </h2>
               <p className="mb-6 text-slate-300">
                 El usuario podrá crear una cuenta, iniciar sesión y finalizar
@@ -792,8 +850,8 @@ export default function Home() {
                   Compras simuladas asociadas al usuario autenticado.
                 </li>
                 <li className="rounded-2xl bg-black/20 p-4">
-                  Panel administrativo visible solamente para usuarios con rol
-                  admin.
+                  Panel administrativo visible para administradores y
+                  desarrolladores.
                 </li>
               </ul>
             </section>
@@ -806,7 +864,7 @@ export default function Home() {
           <div>
             <section className="mb-8 rounded-3xl border border-white/10 bg-gradient-to-br from-cyan-500/20 via-blue-600/20 to-purple-700/20 p-8 shadow-2xl">
               <p className="mb-3 text-sm font-bold uppercase tracking-[0.3em] text-cyan-300">
-                Base de Datos Avanzadas
+                GameOrbit
               </p>
               <h2 className="mb-4 max-w-3xl text-4xl font-black leading-tight md:text-5xl">
                 Catálogo digital de videojuegos con carrito y panel
@@ -832,7 +890,11 @@ export default function Home() {
                 className="rounded-2xl border border-white/10 bg-white/10 px-5 py-3 text-white outline-none focus:border-cyan-300"
               >
                 {categoryNames.map((category) => (
-                  <option key={category} value={category} className="bg-slate-900">
+                  <option
+                    key={category}
+                    value={category}
+                    className="bg-slate-900"
+                  >
                     {category}
                   </option>
                 ))}
@@ -875,7 +937,9 @@ export default function Home() {
                           </span>
                         </div>
 
-                        <h3 className="mb-2 text-xl font-black">{game.titulo}</h3>
+                        <h3 className="mb-2 text-xl font-black">
+                          {game.titulo}
+                        </h3>
                         <p className="mb-3 text-sm text-slate-400">
                           {game.nombre_desarrollador}
                         </p>
@@ -1032,7 +1096,7 @@ export default function Home() {
       {!loading &&
         !connectionError &&
         view === "admin" &&
-        profile?.rol === "admin" && (
+        (profile?.rol === "admin" || profile?.rol === "desarrollador") && (
           <section className="mx-auto max-w-7xl px-6 py-10">
             <div className="mb-8">
               <p className="mb-2 text-sm font-bold uppercase tracking-[0.3em] text-cyan-300">
