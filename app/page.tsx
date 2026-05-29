@@ -97,8 +97,14 @@ export default function Home() {
   const [canReview, setCanReview] = useState(false);
   const [reviewStatus, setReviewStatus] = useState("");
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [editingReviewId, setEditingReviewId] = useState<number | null>(null);
 
   const [reviewForm, setReviewForm] = useState({
+    comentario: "",
+    calificacion: "5",
+  });
+
+  const [editReviewForm, setEditReviewForm] = useState({
     comentario: "",
     calificacion: "5",
   });
@@ -518,6 +524,109 @@ export default function Home() {
 
     await loadReviewsForGame(selectedGame.id_videojuego);
     setReviewLoading(false);
+  }
+
+  function startEditReview(review: ResenaConUsuario) {
+    if (!profile || profile.id_usuario !== review.id_usuario) {
+      alert("Solo puedes editar tus propias reseñas.");
+      return;
+    }
+
+    setEditingReviewId(review.id_resena);
+    setEditReviewForm({
+      comentario: review.comentario || "",
+      calificacion: String(review.calificacion),
+    });
+  }
+
+  async function updateReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!profile || !editingReviewId || !selectedGame) {
+      alert("No se pudo identificar la reseña a editar.");
+      return;
+    }
+
+    if (!editReviewForm.comentario.trim()) {
+      alert("La reseña no puede quedar vacía.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("resena")
+      .update({
+        comentario: editReviewForm.comentario,
+        calificacion: Number(editReviewForm.calificacion),
+      })
+      .eq("id_resena", editingReviewId)
+      .eq("id_usuario", profile.id_usuario);
+
+    if (error) {
+      console.error("Error al editar reseña:", error);
+      alert("No se pudo editar la reseña.");
+      return;
+    }
+
+    alert("Reseña actualizada correctamente.");
+
+    setEditingReviewId(null);
+    setEditReviewForm({
+      comentario: "",
+      calificacion: "5",
+    });
+
+    await loadReviewsForGame(selectedGame.id_videojuego);
+  }
+
+  async function deleteReview(review: ResenaConUsuario) {
+    if (!profile || !selectedGame) {
+      alert("Debes iniciar sesión para eliminar reseñas.");
+      return;
+    }
+
+    const isOwner = profile.id_usuario === review.id_usuario;
+    const isAdmin = profile.rol === "admin";
+
+    if (!isOwner && !isAdmin) {
+      alert("Solo puedes eliminar tus propias reseñas.");
+      return;
+    }
+
+    const confirmDelete = confirm(
+      isAdmin && !isOwner
+        ? "Como administrador, eliminarás la reseña de otro usuario. ¿Deseas continuar?"
+        : "¿Seguro que deseas eliminar tu reseña?"
+    );
+
+    if (!confirmDelete) {
+      return;
+    }
+
+    let deleteQuery = supabase
+      .from("resena")
+      .delete()
+      .eq("id_resena", review.id_resena);
+
+    if (!isAdmin) {
+      deleteQuery = deleteQuery.eq("id_usuario", profile.id_usuario);
+    }
+
+    const { error } = await deleteQuery;
+
+    if (error) {
+      console.error("Error al eliminar reseña:", error);
+      alert("No se pudo eliminar la reseña.");
+      return;
+    }
+
+    alert("Reseña eliminada correctamente.");
+
+    if (editingReviewId === review.id_resena) {
+      setEditingReviewId(null);
+    }
+
+    await loadReviewsForGame(selectedGame.id_videojuego);
+    await checkReviewPermission(selectedGame);
   }
 
   function isMp4Url(url: string | null) {
@@ -1443,32 +1552,124 @@ export default function Home() {
                   </p>
                 ) : (
                   <div className="grid gap-3">
-                    {reviews.map((review) => (
-                      <article
-                        key={review.id_resena}
-                        className="rounded-xl border border-white/10 bg-white/5 p-3"
-                      >
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <p className="font-bold text-slate-100">
-                            {review.nombre_usuario}
-                          </p>
-                          <p className="text-sm font-black text-yellow-300">
-                            {"★".repeat(review.calificacion)}
-                            {"☆".repeat(5 - review.calificacion)}
-                          </p>
-                        </div>
+                    {reviews.map((review) => {
+                      const isOwner = profile?.id_usuario === review.id_usuario;
+                      const isAdmin = profile?.rol === "admin";
+                      const canEditThisReview = isOwner;
+                      const canDeleteThisReview = isOwner || isAdmin;
 
-                        <p className="mb-2 text-sm leading-6 text-slate-300">
-                          {review.comentario}
-                        </p>
+                      return (
+                        <article
+                          key={review.id_resena}
+                          className="rounded-xl border border-white/10 bg-white/5 p-3"
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <p className="font-bold text-slate-100">
+                              {review.nombre_usuario}
+                              {isOwner && (
+                                <span className="ml-2 rounded-full bg-cyan-400/20 px-2 py-1 text-xs text-cyan-200">
+                                  Tu reseña
+                                </span>
+                              )}
+                            </p>
 
-                        <p className="text-xs text-slate-500">
-                          {new Date(review.fecha_resena).toLocaleDateString(
-                            "es-MX"
+                            <p className="text-sm font-black text-yellow-300">
+                              {"★".repeat(review.calificacion)}
+                              {"☆".repeat(5 - review.calificacion)}
+                            </p>
+                          </div>
+
+                          {editingReviewId === review.id_resena ? (
+                            <form onSubmit={updateReview} className="grid gap-3">
+                              <select
+                                value={editReviewForm.calificacion}
+                                onChange={(event) =>
+                                  setEditReviewForm({
+                                    ...editReviewForm,
+                                    calificacion: event.target.value,
+                                  })
+                                }
+                                className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                              >
+                                <option value="5" className="bg-slate-900">
+                                  5 estrellas
+                                </option>
+                                <option value="4" className="bg-slate-900">
+                                  4 estrellas
+                                </option>
+                                <option value="3" className="bg-slate-900">
+                                  3 estrellas
+                                </option>
+                                <option value="2" className="bg-slate-900">
+                                  2 estrellas
+                                </option>
+                                <option value="1" className="bg-slate-900">
+                                  1 estrella
+                                </option>
+                              </select>
+
+                              <textarea
+                                value={editReviewForm.comentario}
+                                onChange={(event) =>
+                                  setEditReviewForm({
+                                    ...editReviewForm,
+                                    comentario: event.target.value,
+                                  })
+                                }
+                                rows={4}
+                                className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none placeholder:text-slate-400 focus:border-cyan-300"
+                              />
+
+                              <div className="flex flex-wrap gap-2">
+                                <button className="rounded-xl bg-green-400 px-4 py-2 text-sm font-black text-slate-950 hover:bg-green-300">
+                                  Guardar cambios
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingReviewId(null)}
+                                  className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-white/20"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <>
+                              <p className="mb-2 text-sm leading-6 text-slate-300">
+                                {review.comentario}
+                              </p>
+
+                              <p className="text-xs text-slate-500">
+                                {new Date(
+                                  review.fecha_resena
+                                ).toLocaleDateString("es-MX")}
+                              </p>
+
+                              {canDeleteThisReview && (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {canEditThisReview && (
+                                    <button
+                                      onClick={() => startEditReview(review)}
+                                      className="rounded-xl bg-cyan-400/20 px-3 py-2 text-sm font-bold text-cyan-200 hover:bg-cyan-400/30"
+                                    >
+                                      Editar
+                                    </button>
+                                  )}
+
+                                  <button
+                                    onClick={() => deleteReview(review)}
+                                    className="rounded-xl bg-red-500/20 px-3 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
+                                  >
+                                    Eliminar
+                                  </button>
+                                </div>
+                              )}
+                            </>
                           )}
-                        </p>
-                      </article>
-                    ))}
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </section>
