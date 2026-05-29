@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabaseClient";
 
@@ -45,6 +46,17 @@ type Game = VideojuegoBD & {
   nombre_desarrollador: string;
 };
 
+type ResenaConUsuario = {
+  id_resena: number;
+  id_usuario: number;
+  id_videojuego: number;
+  id_categoria: number | null;
+  comentario: string | null;
+  fecha_resena: string;
+  calificacion: number;
+  nombre_usuario: string;
+};
+
 export default function Home() {
   const [games, setGames] = useState<Game[]>([]);
   const [categories, setCategories] = useState<Categoria[]>([]);
@@ -64,6 +76,16 @@ export default function Home() {
   const [profile, setProfile] = useState<Perfil | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authLoading, setAuthLoading] = useState(false);
+
+  const [reviews, setReviews] = useState<ResenaConUsuario[]>([]);
+  const [canReview, setCanReview] = useState(false);
+  const [reviewStatus, setReviewStatus] = useState("");
+  const [reviewLoading, setReviewLoading] = useState(false);
+
+  const [reviewForm, setReviewForm] = useState({
+    comentario: "",
+    calificacion: "5",
+  });
 
   const [authForm, setAuthForm] = useState({
     nombre_usuario: "",
@@ -106,6 +128,13 @@ export default function Home() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (selectedGame) {
+      loadReviewsForGame(selectedGame.id_videojuego);
+      checkReviewPermission(selectedGame);
+    }
+  }, [selectedGame?.id_videojuego, profile?.id_usuario]);
 
   async function startApp() {
     setLoading(true);
@@ -313,6 +342,164 @@ export default function Home() {
     }
   }
 
+  async function loadReviewsForGame(id_videojuego: number) {
+    const { data: resenasData, error: resenasError } = await supabase
+      .from("resena")
+      .select("*")
+      .eq("id_videojuego", id_videojuego)
+      .order("fecha_resena", { ascending: false });
+
+    if (resenasError) {
+      console.error("Error al cargar reseñas:", resenasError);
+      setReviews([]);
+      return;
+    }
+
+    const resenas = resenasData || [];
+    const usuariosIds = Array.from(
+      new Set(resenas.map((resena) => resena.id_usuario))
+    );
+
+    let usuarios: { id_usuario: number; nombre_usuario: string }[] = [];
+
+    if (usuariosIds.length > 0) {
+      const { data: usuariosData, error: usuariosError } = await supabase
+        .from("usuario")
+        .select("id_usuario, nombre_usuario")
+        .in("id_usuario", usuariosIds);
+
+      if (usuariosError) {
+        console.error("Error al cargar usuarios de reseñas:", usuariosError);
+      } else {
+        usuarios = usuariosData || [];
+      }
+    }
+
+    const resenasCompletas: ResenaConUsuario[] = resenas.map((resena) => {
+      const usuario = usuarios.find(
+        (item) => item.id_usuario === resena.id_usuario
+      );
+
+      return {
+        id_resena: resena.id_resena,
+        id_usuario: resena.id_usuario,
+        id_videojuego: resena.id_videojuego,
+        id_categoria: resena.id_categoria,
+        comentario: resena.comentario,
+        fecha_resena: resena.fecha_resena,
+        calificacion: resena.calificacion,
+        nombre_usuario: usuario ? usuario.nombre_usuario : "Usuario",
+      };
+    });
+
+    setReviews(resenasCompletas);
+  }
+
+  async function checkReviewPermission(game: Game) {
+    setCanReview(false);
+    setReviewStatus("");
+
+    if (!profile) {
+      setReviewStatus("Inicia sesión para poder dejar una reseña.");
+      return;
+    }
+
+    const { data: alreadyReviewed, error: alreadyReviewedError } =
+      await supabase
+        .from("resena")
+        .select("id_resena")
+        .eq("id_usuario", profile.id_usuario)
+        .eq("id_videojuego", game.id_videojuego)
+        .maybeSingle();
+
+    if (alreadyReviewedError) {
+      console.error(
+        "Error al verificar reseña existente:",
+        alreadyReviewedError
+      );
+      setReviewStatus("No se pudo verificar si ya reseñaste este videojuego.");
+      return;
+    }
+
+    if (alreadyReviewed) {
+      setReviewStatus("Ya dejaste una reseña para este videojuego.");
+      return;
+    }
+
+    const { data: boughtGame, error: boughtGameError } = await supabase.rpc(
+      "usuario_compro_videojuego",
+      {
+        p_id_usuario: profile.id_usuario,
+        p_id_videojuego: game.id_videojuego,
+      }
+    );
+
+    if (boughtGameError) {
+      console.error("Error al verificar compra:", boughtGameError);
+      setReviewStatus("No se pudo verificar si compraste este videojuego.");
+      return;
+    }
+
+    if (!boughtGame) {
+      setReviewStatus("Solo puedes reseñar videojuegos que ya compraste.");
+      return;
+    }
+
+    setCanReview(true);
+    setReviewStatus("Puedes dejar una reseña para este videojuego.");
+  }
+
+  async function submitReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!profile || !selectedGame) {
+      alert("Debes iniciar sesión y seleccionar un videojuego.");
+      return;
+    }
+
+    if (!canReview) {
+      alert("No puedes reseñar este videojuego.");
+      return;
+    }
+
+    if (!reviewForm.comentario.trim()) {
+      alert("Escribe un comentario para la reseña.");
+      return;
+    }
+
+    setReviewLoading(true);
+
+    const { error } = await supabase.from("resena").insert({
+      id_usuario: profile.id_usuario,
+      id_videojuego: selectedGame.id_videojuego,
+      id_categoria: selectedGame.id_categoria,
+      comentario: reviewForm.comentario,
+      calificacion: Number(reviewForm.calificacion),
+    });
+
+    if (error) {
+      console.error("Error al guardar reseña:", error);
+      alert(
+        "No se pudo guardar la reseña. Es posible que ya hayas reseñado este juego."
+      );
+      setReviewLoading(false);
+      return;
+    }
+
+    alert("Reseña guardada correctamente.");
+
+    setReviewForm({
+      comentario: "",
+      calificacion: "5",
+    });
+
+    setCanReview(false);
+    setReviewStatus("Ya dejaste una reseña para este videojuego.");
+
+    await loadReviewsForGame(selectedGame.id_videojuego);
+    setReviewLoading(false);
+  }
+
   async function emergencyLogout() {
     try {
       await supabase.auth.signOut();
@@ -333,7 +520,7 @@ export default function Home() {
     }
   }
 
-  async function handleRegister(event: React.FormEvent<HTMLFormElement>) {
+  async function handleRegister(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthLoading(true);
 
@@ -393,7 +580,7 @@ export default function Home() {
     setAuthLoading(false);
   }
 
-  async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthLoading(true);
 
@@ -541,6 +728,10 @@ export default function Home() {
 
     setCart([]);
     setView("store");
+
+    if (selectedGame) {
+      await checkReviewPermission(selectedGame);
+    }
   }
 
   async function addNewGame() {
@@ -850,8 +1041,7 @@ export default function Home() {
                   Compras simuladas asociadas al usuario autenticado.
                 </li>
                 <li className="rounded-2xl bg-black/20 p-4">
-                  Panel administrativo visible para administradores y
-                  desarrolladores.
+                  Reseñas disponibles únicamente para videojuegos comprados.
                 </li>
               </ul>
             </section>
@@ -860,14 +1050,14 @@ export default function Home() {
       )}
 
       {!loading && !connectionError && view === "store" && (
-        <section className="mx-auto grid max-w-7xl gap-8 px-6 py-8 lg:grid-cols-[1fr_380px]">
+        <section className="mx-auto grid max-w-7xl gap-8 px-6 py-8 lg:grid-cols-[1fr_420px]">
           <div>
             <section className="mb-8 rounded-3xl border border-white/10 bg-gradient-to-br from-cyan-500/20 via-blue-600/20 to-purple-700/20 p-8 shadow-2xl">
               <p className="mb-3 text-sm font-bold uppercase tracking-[0.3em] text-cyan-300">
                 GameOrbit
               </p>
               <h2 className="mb-4 max-w-3xl text-4xl font-black leading-tight md:text-5xl">
-                Catálogo digital de videojuegos con carrito y panel
+                Catálogo digital de videojuegos con carrito, reseñas y panel
                 administrativo
               </h2>
               <p className="max-w-3xl text-slate-300">
@@ -1013,6 +1203,102 @@ export default function Home() {
               >
                 Agregar al carrito
               </button>
+
+              <section className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
+                <h3 className="mb-4 text-xl font-black text-cyan-300">
+                  Reseñas del videojuego
+                </h3>
+
+                <div className="mb-4 rounded-xl bg-white/5 p-3 text-sm text-slate-300">
+                  {reviewStatus}
+                </div>
+
+                {canReview && (
+                  <form onSubmit={submitReview} className="mb-5 grid gap-3">
+                    <select
+                      value={reviewForm.calificacion}
+                      onChange={(event) =>
+                        setReviewForm({
+                          ...reviewForm,
+                          calificacion: event.target.value,
+                        })
+                      }
+                      className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                    >
+                      <option value="5" className="bg-slate-900">
+                        5 estrellas
+                      </option>
+                      <option value="4" className="bg-slate-900">
+                        4 estrellas
+                      </option>
+                      <option value="3" className="bg-slate-900">
+                        3 estrellas
+                      </option>
+                      <option value="2" className="bg-slate-900">
+                        2 estrellas
+                      </option>
+                      <option value="1" className="bg-slate-900">
+                        1 estrella
+                      </option>
+                    </select>
+
+                    <textarea
+                      value={reviewForm.comentario}
+                      onChange={(event) =>
+                        setReviewForm({
+                          ...reviewForm,
+                          comentario: event.target.value,
+                        })
+                      }
+                      placeholder="Escribe tu reseña..."
+                      rows={4}
+                      className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none placeholder:text-slate-400 focus:border-cyan-300"
+                    />
+
+                    <button
+                      disabled={reviewLoading}
+                      className="rounded-xl bg-green-400 px-4 py-3 font-black text-slate-950 hover:bg-green-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {reviewLoading ? "Guardando..." : "Publicar reseña"}
+                    </button>
+                  </form>
+                )}
+
+                {reviews.length === 0 ? (
+                  <p className="text-sm text-slate-400">
+                    Este videojuego todavía no tiene reseñas.
+                  </p>
+                ) : (
+                  <div className="grid gap-3">
+                    {reviews.map((review) => (
+                      <article
+                        key={review.id_resena}
+                        className="rounded-xl border border-white/10 bg-white/5 p-3"
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <p className="font-bold text-slate-100">
+                            {review.nombre_usuario}
+                          </p>
+                          <p className="text-sm font-black text-yellow-300">
+                            {"★".repeat(review.calificacion)}
+                            {"☆".repeat(5 - review.calificacion)}
+                          </p>
+                        </div>
+
+                        <p className="mb-2 text-sm leading-6 text-slate-300">
+                          {review.comentario}
+                        </p>
+
+                        <p className="text-xs text-slate-500">
+                          {new Date(review.fecha_resena).toLocaleDateString(
+                            "es-MX"
+                          )}
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
             </aside>
           )}
         </section>
