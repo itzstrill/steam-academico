@@ -57,6 +57,22 @@ type ResenaConUsuario = {
   nombre_usuario: string;
 };
 
+type UploadedMediaInfo = {
+  publicUrl: string;
+  filePath: string;
+  extension: string;
+};
+
+type MultimediaRow = {
+  id_videojuego: number;
+  id_usuario: number;
+  id_categoria: number;
+  nombre_archivo: string;
+  tipo_archivo: "imagen" | "video";
+  url_archivo: string;
+  descripcion: string;
+};
+
 export default function Home() {
   const [games, setGames] = useState<Game[]>([]);
   const [categories, setCategories] = useState<Categoria[]>([]);
@@ -103,6 +119,10 @@ export default function Home() {
     id_categoria: "",
     id_desarrollador: "",
   });
+
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
 
   useEffect(() => {
     startApp();
@@ -500,6 +520,73 @@ export default function Home() {
     setReviewLoading(false);
   }
 
+  function isMp4Url(url: string | null) {
+    if (!url) return false;
+    return url.toLowerCase().includes(".mp4");
+  }
+
+  function validateMediaFile(file: File, type: "image" | "video") {
+    const allowedImageTypes = ["image/jpeg", "image/png", "image/gif"];
+    const allowedVideoTypes = ["video/mp4"];
+
+    if (type === "image" && !allowedImageTypes.includes(file.type)) {
+      throw new Error("La imagen debe ser JPG, PNG o GIF.");
+    }
+
+    if (type === "video" && !allowedVideoTypes.includes(file.type)) {
+      throw new Error("El video debe ser MP4.");
+    }
+
+    const maxSizeMB = type === "image" ? 5 : 10;
+    const maxSizeBytes = maxSizeMB * 1024 * 1024;
+
+    if (file.size > maxSizeBytes) {
+      throw new Error(
+        type === "image"
+          ? "La imagen no debe pesar más de 5 MB."
+          : "El video no debe pesar más de 10 MB."
+      );
+    }
+  }
+
+  async function uploadGameMedia(file: File, folder: "imagenes" | "videos") {
+    if (!profile) {
+      throw new Error("Debes iniciar sesión para subir archivos.");
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase() || "file";
+
+    const cleanName = file.name
+      .replace(/\s+/g, "-")
+      .replace(/[^a-zA-Z0-9.\-_]/g, "")
+      .toLowerCase();
+
+    const filePath = `${folder}/${profile.id_usuario}-${Date.now()}-${cleanName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("game-media")
+      .upload(filePath, file, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: file.type,
+      });
+
+    if (uploadError) {
+      console.error("Error al subir archivo:", uploadError);
+      throw new Error("No se pudo subir el archivo multimedia.");
+    }
+
+    const { data } = supabase.storage
+      .from("game-media")
+      .getPublicUrl(filePath);
+
+    return {
+      publicUrl: data.publicUrl,
+      filePath,
+      extension,
+    };
+  }
+
   async function emergencyLogout() {
     try {
       await supabase.auth.signOut();
@@ -751,42 +838,118 @@ export default function Home() {
       return;
     }
 
-    const { error } = await supabase.from("videojuego").insert({
-      id_usuario: profile.id_usuario,
-      id_categoria: Number(newGame.id_categoria),
-      id_desarrollador: Number(newGame.id_desarrollador),
-      titulo: newGame.titulo,
-      descripcion: newGame.descripcion,
-      precio: Number(newGame.precio),
-      fecha_lanzamiento: newGame.fecha_lanzamiento || null,
-      imagen_portada:
-        newGame.imagen_portada ||
-        "https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=1200&auto=format&fit=crop",
-      video_url:
-        newGame.video_url || "https://www.youtube.com/embed/dQw4w9WgXcQ",
-      activo: true,
-    });
+    try {
+      setUploadingMedia(true);
 
-    if (error) {
-      console.error("Error al agregar videojuego:", error);
-      alert("Error al agregar el videojuego.");
-      return;
+      let finalImageUrl = newGame.imagen_portada;
+      let finalVideoUrl = newGame.video_url;
+
+      let uploadedImageInfo: UploadedMediaInfo | null = null;
+      let uploadedVideoInfo: UploadedMediaInfo | null = null;
+
+      if (imageFile) {
+        validateMediaFile(imageFile, "image");
+        uploadedImageInfo = await uploadGameMedia(imageFile, "imagenes");
+        finalImageUrl = uploadedImageInfo.publicUrl;
+      }
+
+      if (videoFile) {
+        validateMediaFile(videoFile, "video");
+        uploadedVideoInfo = await uploadGameMedia(videoFile, "videos");
+        finalVideoUrl = uploadedVideoInfo.publicUrl;
+      }
+
+      const { data: createdGame, error } = await supabase
+        .from("videojuego")
+        .insert({
+          id_usuario: profile.id_usuario,
+          id_categoria: Number(newGame.id_categoria),
+          id_desarrollador: Number(newGame.id_desarrollador),
+          titulo: newGame.titulo,
+          descripcion: newGame.descripcion,
+          precio: Number(newGame.precio),
+          fecha_lanzamiento: newGame.fecha_lanzamiento || null,
+          imagen_portada:
+            finalImageUrl ||
+            "https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=1200&auto=format&fit=crop",
+          video_url:
+            finalVideoUrl || "https://www.youtube.com/embed/dQw4w9WgXcQ",
+          activo: true,
+        })
+        .select("*")
+        .single();
+
+      if (error) {
+        console.error("Error al agregar videojuego:", error);
+        alert("Error al agregar el videojuego.");
+        setUploadingMedia(false);
+        return;
+      }
+
+      const multimediaRows: MultimediaRow[] = [];
+
+      if (uploadedImageInfo && imageFile) {
+        multimediaRows.push({
+          id_videojuego: createdGame.id_videojuego,
+          id_usuario: profile.id_usuario,
+          id_categoria: Number(newGame.id_categoria),
+          nombre_archivo: imageFile.name,
+          tipo_archivo: "imagen",
+          url_archivo: uploadedImageInfo.publicUrl,
+          descripcion: "Imagen cargada desde el panel administrador.",
+        });
+      }
+
+      if (uploadedVideoInfo && videoFile) {
+        multimediaRows.push({
+          id_videojuego: createdGame.id_videojuego,
+          id_usuario: profile.id_usuario,
+          id_categoria: Number(newGame.id_categoria),
+          nombre_archivo: videoFile.name,
+          tipo_archivo: "video",
+          url_archivo: uploadedVideoInfo.publicUrl,
+          descripcion: "Video MP4 cargado desde el panel administrador.",
+        });
+      }
+
+      if (multimediaRows.length > 0) {
+        const { error: multimediaError } = await supabase
+          .from("archivo_multimedia")
+          .insert(multimediaRows);
+
+        if (multimediaError) {
+          console.error("Error al registrar multimedia:", multimediaError);
+          alert(
+            "El videojuego se guardó, pero hubo un problema al registrar la multimedia."
+          );
+        }
+      }
+
+      alert("Videojuego agregado correctamente con multimedia.");
+
+      setNewGame({
+        titulo: "",
+        descripcion: "",
+        precio: "",
+        fecha_lanzamiento: "",
+        imagen_portada: "",
+        video_url: "",
+        id_categoria: "",
+        id_desarrollador: "",
+      });
+
+      setImageFile(null);
+      setVideoFile(null);
+
+      await loadData();
+    } catch (error) {
+      console.error("Error general al guardar videojuego:", error);
+      alert(
+        error instanceof Error ? error.message : "Error al guardar el juego."
+      );
+    } finally {
+      setUploadingMedia(false);
     }
-
-    alert("Videojuego agregado correctamente a PostgreSQL.");
-
-    setNewGame({
-      titulo: "",
-      descripcion: "",
-      precio: "",
-      fecha_lanzamiento: "",
-      imagen_portada: "",
-      video_url: "",
-      id_categoria: "",
-      id_desarrollador: "",
-    });
-
-    await loadData();
   }
 
   async function deactivateGame(id_videojuego: number) {
@@ -1043,6 +1206,9 @@ export default function Home() {
                 <li className="rounded-2xl bg-black/20 p-4">
                   Reseñas disponibles únicamente para videojuegos comprados.
                 </li>
+                <li className="rounded-2xl bg-black/20 p-4">
+                  Carga de multimedia JPG, PNG, GIF y MP4 con Supabase Storage.
+                </li>
               </ul>
             </section>
           </div>
@@ -1188,12 +1354,19 @@ export default function Home() {
 
               {selectedGame.video_url && (
                 <div className="mb-5 overflow-hidden rounded-2xl border border-white/10">
-                  <iframe
-                    className="aspect-video w-full"
-                    src={selectedGame.video_url}
-                    title={`Trailer de ${selectedGame.titulo}`}
-                    allowFullScreen
-                  />
+                  {isMp4Url(selectedGame.video_url) ? (
+                    <video className="aspect-video w-full" controls>
+                      <source src={selectedGame.video_url} type="video/mp4" />
+                      Tu navegador no soporta reproducción de video.
+                    </video>
+                  ) : (
+                    <iframe
+                      className="aspect-video w-full"
+                      src={selectedGame.video_url}
+                      title={`Trailer de ${selectedGame.titulo}`}
+                      allowFullScreen
+                    />
+                  )}
                 </div>
               )}
 
@@ -1390,8 +1563,8 @@ export default function Home() {
               </p>
               <h2 className="text-4xl font-black">Panel de administrador</h2>
               <p className="mt-3 max-w-3xl text-slate-300">
-                Desde aquí se agregan y desactivan videojuegos directamente en
-                la tabla videojuego de PostgreSQL.
+                Desde aquí se agregan videojuegos directamente en PostgreSQL y
+                se cargan archivos multimedia en Supabase Storage.
               </p>
             </div>
 
@@ -1500,24 +1673,67 @@ export default function Home() {
                         imagen_portada: event.target.value,
                       })
                     }
-                    placeholder="URL de imagen"
+                    placeholder="URL de imagen externa"
                     className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 outline-none focus:border-cyan-300"
                   />
+
+                  <label className="grid gap-2 rounded-2xl border border-dashed border-cyan-300/30 bg-cyan-400/10 p-4 text-sm text-slate-200">
+                    <span className="font-bold text-cyan-300">
+                      Cargar imagen local JPG, PNG o GIF
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] || null;
+                        setImageFile(file);
+                      }}
+                      className="text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-cyan-400 file:px-4 file:py-2 file:font-bold file:text-slate-950"
+                    />
+                    {imageFile && (
+                      <span className="text-xs text-slate-400">
+                        Archivo seleccionado: {imageFile.name}
+                      </span>
+                    )}
+                  </label>
 
                   <input
                     value={newGame.video_url}
                     onChange={(event) =>
                       setNewGame({ ...newGame, video_url: event.target.value })
                     }
-                    placeholder="URL de video embed de YouTube"
+                    placeholder="URL de video externo o embed de YouTube"
                     className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 outline-none focus:border-cyan-300"
                   />
 
+                  <label className="grid gap-2 rounded-2xl border border-dashed border-purple-300/30 bg-purple-400/10 p-4 text-sm text-slate-200">
+                    <span className="font-bold text-purple-300">
+                      Cargar video local MP4
+                    </span>
+                    <input
+                      type="file"
+                      accept="video/mp4"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] || null;
+                        setVideoFile(file);
+                      }}
+                      className="text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-purple-400 file:px-4 file:py-2 file:font-bold file:text-slate-950"
+                    />
+                    {videoFile && (
+                      <span className="text-xs text-slate-400">
+                        Archivo seleccionado: {videoFile.name}
+                      </span>
+                    )}
+                  </label>
+
                   <button
                     onClick={addNewGame}
-                    className="rounded-2xl bg-cyan-400 px-4 py-3 font-black text-slate-950 transition hover:bg-cyan-300"
+                    disabled={uploadingMedia}
+                    className="rounded-2xl bg-cyan-400 px-4 py-3 font-black text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Guardar videojuego en PostgreSQL
+                    {uploadingMedia
+                      ? "Guardando y subiendo archivos..."
+                      : "Guardar videojuego en PostgreSQL"}
                   </button>
                 </div>
               </section>
