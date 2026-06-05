@@ -130,6 +130,23 @@ export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [uploadingMedia, setUploadingMedia] = useState(false);
 
+  const [editingGameId, setEditingGameId] = useState<number | null>(null);
+  const [updatingGame, setUpdatingGame] = useState(false);
+  const [selectedGameIds, setSelectedGameIds] = useState<number[]>([]);
+  const [editImageFile, setEditImageFile] = useState<File | null>(null);
+  const [editVideoFile, setEditVideoFile] = useState<File | null>(null);
+
+  const [editGameForm, setEditGameForm] = useState({
+    titulo: "",
+    descripcion: "",
+    precio: "",
+    fecha_lanzamiento: "",
+    imagen_portada: "",
+    video_url: "",
+    id_categoria: "",
+    id_desarrollador: "",
+  });
+
   useEffect(() => {
     startApp();
 
@@ -694,6 +711,209 @@ export default function Home() {
       filePath,
       extension,
     };
+  }
+
+  function startEditGame(game: Game) {
+    setEditingGameId(game.id_videojuego);
+
+    setEditGameForm({
+      titulo: game.titulo,
+      descripcion: game.descripcion,
+      precio: String(game.precio),
+      fecha_lanzamiento: game.fecha_lanzamiento || "",
+      imagen_portada: game.imagen_portada || "",
+      video_url: game.video_url || "",
+      id_categoria: String(game.id_categoria),
+      id_desarrollador: String(game.id_desarrollador),
+    });
+
+    setEditImageFile(null);
+    setEditVideoFile(null);
+  }
+
+  function cancelEditGame() {
+    setEditingGameId(null);
+    setEditGameForm({
+      titulo: "",
+      descripcion: "",
+      precio: "",
+      fecha_lanzamiento: "",
+      imagen_portada: "",
+      video_url: "",
+      id_categoria: "",
+      id_desarrollador: "",
+    });
+    setEditImageFile(null);
+    setEditVideoFile(null);
+  }
+
+  async function updateGame(game: Game) {
+    if (profile?.rol !== "admin" && profile?.rol !== "desarrollador") {
+      alert("Solo un administrador o desarrollador puede modificar videojuegos.");
+      return;
+    }
+
+    if (
+      !editGameForm.titulo ||
+      !editGameForm.descripcion ||
+      !editGameForm.precio ||
+      !editGameForm.id_categoria ||
+      !editGameForm.id_desarrollador
+    ) {
+      alert("Completa título, descripción, precio, categoría y desarrollador.");
+      return;
+    }
+
+    try {
+      setUpdatingGame(true);
+
+      let finalImageUrl = editGameForm.imagen_portada;
+      let finalVideoUrl = editGameForm.video_url;
+
+      let uploadedImageInfo: UploadedMediaInfo | null = null;
+      let uploadedVideoInfo: UploadedMediaInfo | null = null;
+
+      if (editImageFile) {
+        validateMediaFile(editImageFile, "image");
+        uploadedImageInfo = await uploadGameMedia(editImageFile, "imagenes");
+        finalImageUrl = uploadedImageInfo.publicUrl;
+      }
+
+      if (editVideoFile) {
+        validateMediaFile(editVideoFile, "video");
+        uploadedVideoInfo = await uploadGameMedia(editVideoFile, "videos");
+        finalVideoUrl = uploadedVideoInfo.publicUrl;
+      }
+
+      const { error } = await supabase
+        .from("videojuego")
+        .update({
+          titulo: editGameForm.titulo,
+          descripcion: editGameForm.descripcion,
+          precio: Number(editGameForm.precio),
+          fecha_lanzamiento: editGameForm.fecha_lanzamiento || null,
+          id_categoria: Number(editGameForm.id_categoria),
+          id_desarrollador: Number(editGameForm.id_desarrollador),
+          imagen_portada: finalImageUrl || null,
+          video_url: finalVideoUrl || null,
+        })
+        .eq("id_videojuego", game.id_videojuego);
+
+      if (error) {
+        console.error("Error al actualizar videojuego:", error);
+        alert("No se pudo actualizar el videojuego.");
+        setUpdatingGame(false);
+        return;
+      }
+
+      const multimediaRows: MultimediaRow[] = [];
+
+      if (uploadedImageInfo && editImageFile && profile) {
+        multimediaRows.push({
+          id_videojuego: game.id_videojuego,
+          id_usuario: profile.id_usuario,
+          id_categoria: Number(editGameForm.id_categoria),
+          nombre_archivo: editImageFile.name,
+          tipo_archivo: "imagen",
+          url_archivo: uploadedImageInfo.publicUrl,
+          descripcion: "Imagen actualizada desde el panel administrador.",
+        });
+      }
+
+      if (uploadedVideoInfo && editVideoFile && profile) {
+        multimediaRows.push({
+          id_videojuego: game.id_videojuego,
+          id_usuario: profile.id_usuario,
+          id_categoria: Number(editGameForm.id_categoria),
+          nombre_archivo: editVideoFile.name,
+          tipo_archivo: "video",
+          url_archivo: uploadedVideoInfo.publicUrl,
+          descripcion: "Video actualizado desde el panel administrador.",
+        });
+      }
+
+      if (multimediaRows.length > 0) {
+        const { error: multimediaError } = await supabase
+          .from("archivo_multimedia")
+          .insert(multimediaRows);
+
+        if (multimediaError) {
+          console.error("Error al registrar multimedia:", multimediaError);
+          alert(
+            "El videojuego fue actualizado, pero hubo un problema al registrar la multimedia."
+          );
+        }
+      }
+
+      alert("Videojuego actualizado correctamente.");
+
+      cancelEditGame();
+      await loadData();
+    } catch (error) {
+      console.error("Error general al actualizar videojuego:", error);
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Error al actualizar el videojuego."
+      );
+    } finally {
+      setUpdatingGame(false);
+    }
+  }
+
+  function toggleSelectedGame(id_videojuego: number) {
+    setSelectedGameIds((prev) => {
+      if (prev.includes(id_videojuego)) {
+        return prev.filter((id) => id !== id_videojuego);
+      }
+
+      return [...prev, id_videojuego];
+    });
+  }
+
+  function toggleSelectAllGames() {
+    if (selectedGameIds.length === games.length) {
+      setSelectedGameIds([]);
+      return;
+    }
+
+    setSelectedGameIds(games.map((game) => game.id_videojuego));
+  }
+
+  async function deactivateSelectedGames() {
+    if (profile?.rol !== "admin") {
+      alert("Solo un administrador puede hacer cambios por multirregistro.");
+      return;
+    }
+
+    if (selectedGameIds.length === 0) {
+      alert("Selecciona al menos un videojuego.");
+      return;
+    }
+
+    const confirmAction = confirm(
+      `Vas a desactivar ${selectedGameIds.length} videojuego(s). ¿Deseas continuar?`
+    );
+
+    if (!confirmAction) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from("videojuego")
+      .update({ activo: false })
+      .in("id_videojuego", selectedGameIds);
+
+    if (error) {
+      console.error("Error en multirregistro:", error);
+      alert("No se pudieron desactivar los videojuegos seleccionados.");
+      return;
+    }
+
+    alert("Videojuegos seleccionados desactivados correctamente.");
+
+    setSelectedGameIds([]);
+    await loadData();
   }
 
   async function emergencyLogout() {
@@ -1316,7 +1536,8 @@ export default function Home() {
                   Reseñas disponibles únicamente para videojuegos comprados.
                 </li>
                 <li className="rounded-2xl bg-black/20 p-4">
-                  Carga de multimedia JPG, PNG, GIF y MP4 con Supabase Storage.
+                  Edición de videojuegos y multirregistro desde el panel
+                  administrativo.
                 </li>
               </ul>
             </section>
@@ -1764,8 +1985,9 @@ export default function Home() {
               </p>
               <h2 className="text-4xl font-black">Panel de administrador</h2>
               <p className="mt-3 max-w-3xl text-slate-300">
-                Desde aquí se agregan videojuegos directamente en PostgreSQL y
-                se cargan archivos multimedia en Supabase Storage.
+                Desde aquí se agregan, editan y desactivan videojuegos
+                directamente en PostgreSQL. También se permite multirregistro
+                mediante selección múltiple.
               </p>
             </div>
 
@@ -1959,40 +2181,272 @@ export default function Home() {
                   </span>
                 </div>
 
+                <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <button
+                    onClick={toggleSelectAllGames}
+                    className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-white/20"
+                  >
+                    {selectedGameIds.length === games.length
+                      ? "Quitar selección"
+                      : "Seleccionar todos"}
+                  </button>
+
+                  <button
+                    onClick={deactivateSelectedGames}
+                    className="rounded-xl bg-red-500/20 px-4 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
+                  >
+                    Desactivar seleccionados ({selectedGameIds.length})
+                  </button>
+
+                  <span className="text-sm text-slate-400">
+                    Multirregistro: permite modificar varios videojuegos
+                    seleccionados.
+                  </span>
+                </div>
+
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[760px] border-collapse">
+                  <table className="w-full min-w-[980px] border-collapse">
                     <thead>
                       <tr className="border-b border-white/10 text-left text-sm text-slate-400">
+                        <th className="p-3">Sel.</th>
                         <th className="p-3">ID</th>
                         <th className="p-3">Título</th>
                         <th className="p-3">Categoría</th>
                         <th className="p-3">Desarrollador</th>
                         <th className="p-3">Precio</th>
-                        <th className="p-3">Acción</th>
+                        <th className="p-3">Acciones</th>
                       </tr>
                     </thead>
+
                     <tbody>
                       {games.map((game) => (
                         <tr
                           key={game.id_videojuego}
-                          className="border-b border-white/10"
+                          className="border-b border-white/10 align-top"
                         >
-                          <td className="p-3">{game.id_videojuego}</td>
-                          <td className="p-3 font-bold">{game.titulo}</td>
-                          <td className="p-3">{game.nombre_categoria}</td>
-                          <td className="p-3">{game.nombre_desarrollador}</td>
                           <td className="p-3">
-                            ${Number(game.precio).toFixed(2)}
-                          </td>
-                          <td className="p-3">
-                            <button
-                              onClick={() =>
-                                deactivateGame(game.id_videojuego)
+                            <input
+                              type="checkbox"
+                              checked={selectedGameIds.includes(
+                                game.id_videojuego
+                              )}
+                              onChange={() =>
+                                toggleSelectedGame(game.id_videojuego)
                               }
-                              className="rounded-xl bg-red-500/20 px-3 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
-                            >
-                              Desactivar
-                            </button>
+                            />
+                          </td>
+
+                          <td className="p-3">{game.id_videojuego}</td>
+
+                          <td className="p-3 font-bold">
+                            {editingGameId === game.id_videojuego ? (
+                              <input
+                                value={editGameForm.titulo}
+                                onChange={(event) =>
+                                  setEditGameForm({
+                                    ...editGameForm,
+                                    titulo: event.target.value,
+                                  })
+                                }
+                                className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                              />
+                            ) : (
+                              game.titulo
+                            )}
+                          </td>
+
+                          <td className="p-3">
+                            {editingGameId === game.id_videojuego ? (
+                              <select
+                                value={editGameForm.id_categoria}
+                                onChange={(event) =>
+                                  setEditGameForm({
+                                    ...editGameForm,
+                                    id_categoria: event.target.value,
+                                  })
+                                }
+                                className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                              >
+                                {categories.map((category) => (
+                                  <option
+                                    key={category.id_categoria}
+                                    value={category.id_categoria}
+                                    className="bg-slate-900"
+                                  >
+                                    {category.nombre_categoria}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              game.nombre_categoria
+                            )}
+                          </td>
+
+                          <td className="p-3">
+                            {editingGameId === game.id_videojuego ? (
+                              <select
+                                value={editGameForm.id_desarrollador}
+                                onChange={(event) =>
+                                  setEditGameForm({
+                                    ...editGameForm,
+                                    id_desarrollador: event.target.value,
+                                  })
+                                }
+                                className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                              >
+                                {developers.map((developer) => (
+                                  <option
+                                    key={developer.id_desarrollador}
+                                    value={developer.id_desarrollador}
+                                    className="bg-slate-900"
+                                  >
+                                    {developer.nombre_desarrollador}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              game.nombre_desarrollador
+                            )}
+                          </td>
+
+                          <td className="p-3">
+                            {editingGameId === game.id_videojuego ? (
+                              <input
+                                value={editGameForm.precio}
+                                onChange={(event) =>
+                                  setEditGameForm({
+                                    ...editGameForm,
+                                    precio: event.target.value,
+                                  })
+                                }
+                                type="number"
+                                className="w-28 rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                              />
+                            ) : (
+                              `$${Number(game.precio).toFixed(2)}`
+                            )}
+                          </td>
+
+                          <td className="p-3">
+                            {editingGameId === game.id_videojuego ? (
+                              <div className="grid min-w-[280px] gap-3">
+                                <textarea
+                                  value={editGameForm.descripcion}
+                                  onChange={(event) =>
+                                    setEditGameForm({
+                                      ...editGameForm,
+                                      descripcion: event.target.value,
+                                    })
+                                  }
+                                  rows={4}
+                                  placeholder="Descripción"
+                                  className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                                />
+
+                                <input
+                                  value={editGameForm.fecha_lanzamiento}
+                                  onChange={(event) =>
+                                    setEditGameForm({
+                                      ...editGameForm,
+                                      fecha_lanzamiento: event.target.value,
+                                    })
+                                  }
+                                  type="date"
+                                  className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                                />
+
+                                <input
+                                  value={editGameForm.imagen_portada}
+                                  onChange={(event) =>
+                                    setEditGameForm({
+                                      ...editGameForm,
+                                      imagen_portada: event.target.value,
+                                    })
+                                  }
+                                  placeholder="URL de imagen"
+                                  className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                                />
+
+                                <label className="grid gap-2 rounded-xl border border-dashed border-cyan-300/30 bg-cyan-400/10 p-3 text-xs text-slate-300">
+                                  Nueva imagen JPG, PNG o GIF
+                                  <input
+                                    type="file"
+                                    accept="image/jpeg,image/png,image/gif"
+                                    onChange={(event) =>
+                                      setEditImageFile(
+                                        event.target.files?.[0] || null
+                                      )
+                                    }
+                                  />
+                                  {editImageFile && (
+                                    <span>Archivo: {editImageFile.name}</span>
+                                  )}
+                                </label>
+
+                                <input
+                                  value={editGameForm.video_url}
+                                  onChange={(event) =>
+                                    setEditGameForm({
+                                      ...editGameForm,
+                                      video_url: event.target.value,
+                                    })
+                                  }
+                                  placeholder="URL de video"
+                                  className="rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none focus:border-cyan-300"
+                                />
+
+                                <label className="grid gap-2 rounded-xl border border-dashed border-purple-300/30 bg-purple-400/10 p-3 text-xs text-slate-300">
+                                  Nuevo video MP4
+                                  <input
+                                    type="file"
+                                    accept="video/mp4"
+                                    onChange={(event) =>
+                                      setEditVideoFile(
+                                        event.target.files?.[0] || null
+                                      )
+                                    }
+                                  />
+                                  {editVideoFile && (
+                                    <span>Archivo: {editVideoFile.name}</span>
+                                  )}
+                                </label>
+
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    onClick={() => updateGame(game)}
+                                    disabled={updatingGame}
+                                    className="rounded-xl bg-green-400 px-3 py-2 text-sm font-black text-slate-950 hover:bg-green-300 disabled:opacity-60"
+                                  >
+                                    {updatingGame ? "Guardando..." : "Guardar"}
+                                  </button>
+
+                                  <button
+                                    onClick={cancelEditGame}
+                                    className="rounded-xl bg-white/10 px-3 py-2 text-sm font-bold text-slate-200 hover:bg-white/20"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  onClick={() => startEditGame(game)}
+                                  className="rounded-xl bg-cyan-400/20 px-3 py-2 text-sm font-bold text-cyan-200 hover:bg-cyan-400/30"
+                                >
+                                  Editar
+                                </button>
+
+                                <button
+                                  onClick={() =>
+                                    deactivateGame(game.id_videojuego)
+                                  }
+                                  className="rounded-xl bg-red-500/20 px-3 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
+                                >
+                                  Desactivar
+                                </button>
+                              </div>
+                            )}
                           </td>
                         </tr>
                       ))}
