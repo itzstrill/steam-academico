@@ -75,12 +75,16 @@ type MultimediaRow = {
 
 export default function Home() {
   const [games, setGames] = useState<Game[]>([]);
+  const [adminGames, setAdminGames] = useState<Game[]>([]);
   const [categories, setCategories] = useState<Categoria[]>([]);
   const [developers, setDevelopers] = useState<Desarrollador[]>([]);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
   const [cart, setCart] = useState<Game[]>([]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Todas");
+  const [adminStatusFilter, setAdminStatusFilter] = useState<
+    "todos" | "activos" | "desactivados"
+  >("todos");
   const [view, setView] = useState<"store" | "cart" | "admin" | "auth">(
     "store"
   );
@@ -215,6 +219,32 @@ export default function Home() {
     }
   }
 
+  function buildGames(
+    videojuegos: VideojuegoBD[],
+    categorias: Categoria[],
+    desarrolladores: Desarrollador[]
+  ): Game[] {
+    return videojuegos.map((juego) => {
+      const categoria = categorias.find(
+        (cat) => cat.id_categoria === juego.id_categoria
+      );
+
+      const desarrollador = desarrolladores.find(
+        (dev) => dev.id_desarrollador === juego.id_desarrollador
+      );
+
+      return {
+        ...juego,
+        nombre_categoria: categoria
+          ? categoria.nombre_categoria
+          : "Sin categoría",
+        nombre_desarrollador: desarrollador
+          ? desarrollador.nombre_desarrollador
+          : "Sin desarrollador",
+      };
+    });
+  }
+
   async function checkCurrentSession() {
     const { data, error } = await supabase.auth.getSession();
 
@@ -338,48 +368,65 @@ export default function Home() {
       );
     }
 
-    const { data: videojuegosData, error: videojuegosError } = await supabase
-      .from("videojuego")
-      .select("*")
-      .eq("activo", true)
-      .order("id_videojuego", { ascending: true });
+    const { data: videojuegosActivosData, error: videojuegosActivosError } =
+      await supabase
+        .from("videojuego")
+        .select("*")
+        .eq("activo", true)
+        .order("id_videojuego", { ascending: true });
 
-    if (videojuegosError) {
+    if (videojuegosActivosError) {
       throw new Error(
-        "Error al cargar videojuegos:\n" + formatSupabaseError(videojuegosError)
+        "Error al cargar videojuegos activos:\n" +
+          formatSupabaseError(videojuegosActivosError)
+      );
+    }
+
+    const { data: videojuegosTodosData, error: videojuegosTodosError } =
+      await supabase
+        .from("videojuego")
+        .select("*")
+        .order("id_videojuego", { ascending: true });
+
+    if (videojuegosTodosError) {
+      throw new Error(
+        "Error al cargar inventario administrativo:\n" +
+          formatSupabaseError(videojuegosTodosError)
       );
     }
 
     const categorias = (categoriasData || []) as Categoria[];
     const desarrolladores = (desarrolladoresData || []) as Desarrollador[];
-    const videojuegos = (videojuegosData || []) as VideojuegoBD[];
 
-    const juegosCompletos: Game[] = videojuegos.map((juego) => {
-      const categoria = categorias.find(
-        (cat) => cat.id_categoria === juego.id_categoria
-      );
+    const videojuegosActivos = (videojuegosActivosData || []) as VideojuegoBD[];
+    const videojuegosTodos = (videojuegosTodosData || []) as VideojuegoBD[];
 
-      const desarrollador = desarrolladores.find(
-        (dev) => dev.id_desarrollador === juego.id_desarrollador
-      );
+    const juegosActivosCompletos = buildGames(
+      videojuegosActivos,
+      categorias,
+      desarrolladores
+    );
 
-      return {
-        ...juego,
-        nombre_categoria: categoria
-          ? categoria.nombre_categoria
-          : "Sin categoría",
-        nombre_desarrollador: desarrollador
-          ? desarrollador.nombre_desarrollador
-          : "Sin desarrollador",
-      };
-    });
+    const juegosAdminCompletos = buildGames(
+      videojuegosTodos,
+      categorias,
+      desarrolladores
+    );
 
     setCategories(categorias);
     setDevelopers(desarrolladores);
-    setGames(juegosCompletos);
+    setGames(juegosActivosCompletos);
+    setAdminGames(juegosAdminCompletos);
 
-    if (juegosCompletos.length > 0) {
-      setSelectedGame(juegosCompletos[0]);
+    if (juegosActivosCompletos.length > 0) {
+      if (
+        !selectedGame ||
+        !juegosActivosCompletos.some(
+          (game) => game.id_videojuego === selectedGame.id_videojuego
+        )
+      ) {
+        setSelectedGame(juegosActivosCompletos[0]);
+      }
     } else {
       setSelectedGame(null);
     }
@@ -871,16 +918,28 @@ export default function Home() {
     });
   }
 
-  function toggleSelectAllGames() {
-    if (selectedGameIds.length === games.length) {
+  function toggleSelectAllAdminGames() {
+    if (filteredAdminGames.length === 0) {
       setSelectedGameIds([]);
       return;
     }
 
-    setSelectedGameIds(games.map((game) => game.id_videojuego));
+    const filteredIds = filteredAdminGames.map((game) => game.id_videojuego);
+    const allFilteredSelected = filteredIds.every((id) =>
+      selectedGameIds.includes(id)
+    );
+
+    if (allFilteredSelected) {
+      setSelectedGameIds((prev) =>
+        prev.filter((id) => !filteredIds.includes(id))
+      );
+      return;
+    }
+
+    setSelectedGameIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
   }
 
-  async function deactivateSelectedGames() {
+  async function updateSelectedGamesStatus(newStatus: boolean) {
     if (profile?.rol !== "admin") {
       alert("Solo un administrador puede hacer cambios por multirregistro.");
       return;
@@ -891,8 +950,10 @@ export default function Home() {
       return;
     }
 
+    const actionText = newStatus ? "activar" : "desactivar";
+
     const confirmAction = confirm(
-      `Vas a desactivar ${selectedGameIds.length} videojuego(s). ¿Deseas continuar?`
+      `Vas a ${actionText} ${selectedGameIds.length} videojuego(s). ¿Deseas continuar?`
     );
 
     if (!confirmAction) {
@@ -901,18 +962,55 @@ export default function Home() {
 
     const { error } = await supabase
       .from("videojuego")
-      .update({ activo: false })
+      .update({ activo: newStatus })
       .in("id_videojuego", selectedGameIds);
 
     if (error) {
       console.error("Error en multirregistro:", error);
-      alert("No se pudieron desactivar los videojuegos seleccionados.");
+      alert(`No se pudieron ${actionText} los videojuegos seleccionados.`);
       return;
     }
 
-    alert("Videojuegos seleccionados desactivados correctamente.");
+    alert(
+      newStatus
+        ? "Videojuegos seleccionados activados correctamente."
+        : "Videojuegos seleccionados desactivados correctamente."
+    );
 
     setSelectedGameIds([]);
+    await loadData();
+  }
+
+  async function toggleSingleGameStatus(game: Game) {
+    if (profile?.rol !== "admin" && profile?.rol !== "desarrollador") {
+      alert("Solo un administrador o desarrollador puede cambiar el estado.");
+      return;
+    }
+
+    const newStatus = !game.activo;
+
+    const confirmAction = confirm(
+      newStatus
+        ? `¿Deseas activar "${game.titulo}"?`
+        : `¿Deseas desactivar "${game.titulo}"?`
+    );
+
+    if (!confirmAction) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from("videojuego")
+      .update({ activo: newStatus })
+      .eq("id_videojuego", game.id_videojuego);
+
+    if (error) {
+      console.error("Error al cambiar estado:", error);
+      alert("No se pudo cambiar el estado del videojuego.");
+      return;
+    }
+
+    alert(newStatus ? "Videojuego activado." : "Videojuego desactivado.");
     await loadData();
   }
 
@@ -1072,10 +1170,27 @@ export default function Home() {
     });
   }, [games, search, selectedCategory]);
 
+  const filteredAdminGames = useMemo(() => {
+    return adminGames.filter((game) => {
+      if (adminStatusFilter === "activos") {
+        return game.activo;
+      }
+
+      if (adminStatusFilter === "desactivados") {
+        return !game.activo;
+      }
+
+      return true;
+    });
+  }, [adminGames, adminStatusFilter]);
+
   const cartTotal = cart.reduce(
     (total, game) => total + Number(game.precio),
     0
   );
+
+  const adminActiveCount = adminGames.filter((game) => game.activo).length;
+  const adminInactiveCount = adminGames.filter((game) => !game.activo).length;
 
   function addToCart(game: Game) {
     const exists = cart.some(
@@ -1279,27 +1394,6 @@ export default function Home() {
     } finally {
       setUploadingMedia(false);
     }
-  }
-
-  async function deactivateGame(id_videojuego: number) {
-    if (profile?.rol !== "admin" && profile?.rol !== "desarrollador") {
-      alert("Solo un administrador o desarrollador puede desactivar videojuegos.");
-      return;
-    }
-
-    const { error } = await supabase
-      .from("videojuego")
-      .update({ activo: false })
-      .eq("id_videojuego", id_videojuego);
-
-    if (error) {
-      console.error("Error al desactivar:", error);
-      alert("No se pudo desactivar el videojuego.");
-      return;
-    }
-
-    alert("Videojuego desactivado correctamente.");
-    await loadData();
   }
 
   return (
@@ -1536,8 +1630,8 @@ export default function Home() {
                   Reseñas disponibles únicamente para videojuegos comprados.
                 </li>
                 <li className="rounded-2xl bg-black/20 p-4">
-                  Edición de videojuegos y multirregistro desde el panel
-                  administrativo.
+                  Administración completa de inventario: activos,
+                  desactivados, edición y multirregistro.
                 </li>
               </ul>
             </section>
@@ -1557,8 +1651,8 @@ export default function Home() {
                 administrativo
               </h2>
               <p className="max-w-3xl text-slate-300">
-                Los datos mostrados se consultan desde tablas reales de
-                PostgreSQL alojadas en Supabase.
+                La tienda pública muestra únicamente videojuegos activos. El
+                inventario completo se gestiona desde el panel administrativo.
               </p>
             </section>
 
@@ -1590,7 +1684,7 @@ export default function Home() {
             {filteredGames.length === 0 ? (
               <div className="rounded-3xl border border-white/10 bg-white/5 p-8 text-center">
                 <p className="text-xl font-bold text-slate-300">
-                  No se encontraron videojuegos.
+                  No se encontraron videojuegos activos.
                 </p>
               </div>
             ) : (
@@ -1985,9 +2079,8 @@ export default function Home() {
               </p>
               <h2 className="text-4xl font-black">Panel de administrador</h2>
               <p className="mt-3 max-w-3xl text-slate-300">
-                Desde aquí se agregan, editan y desactivan videojuegos
-                directamente en PostgreSQL. También se permite multirregistro
-                mediante selección múltiple.
+                Desde aquí se agregan, editan, activan y desactivan videojuegos.
+                El inventario muestra tanto registros activos como desactivados.
               </p>
             </div>
 
@@ -2167,49 +2260,81 @@ export default function Home() {
                 </h3>
 
                 <div className="mb-4 rounded-2xl border border-cyan-300/20 bg-cyan-400/10 p-4 text-sm text-slate-300">
-                  Categorías cargadas:{" "}
+                  Total de videojuegos:{" "}
                   <span className="font-black text-cyan-300">
-                    {categories.length}
+                    {adminGames.length}
                   </span>{" "}
-                  | Desarrolladores cargados:{" "}
-                  <span className="font-black text-cyan-300">
-                    {developers.length}
+                  | Activos:{" "}
+                  <span className="font-black text-green-300">
+                    {adminActiveCount}
                   </span>{" "}
-                  | Videojuegos activos:{" "}
-                  <span className="font-black text-cyan-300">
-                    {games.length}
+                  | Desactivados:{" "}
+                  <span className="font-black text-red-300">
+                    {adminInactiveCount}
                   </span>
                 </div>
 
-                <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <button
-                    onClick={toggleSelectAllGames}
-                    className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-white/20"
-                  >
-                    {selectedGameIds.length === games.length
-                      ? "Quitar selección"
-                      : "Seleccionar todos"}
-                  </button>
+                <div className="mb-4 grid gap-3 rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <select
+                      value={adminStatusFilter}
+                      onChange={(event) => {
+                        setAdminStatusFilter(
+                          event.target.value as
+                            | "todos"
+                            | "activos"
+                            | "desactivados"
+                        );
+                        setSelectedGameIds([]);
+                      }}
+                      className="rounded-xl border border-white/10 bg-white/10 px-4 py-2 text-sm outline-none focus:border-cyan-300"
+                    >
+                      <option value="todos" className="bg-slate-900">
+                        Ver todos
+                      </option>
+                      <option value="activos" className="bg-slate-900">
+                        Solo activos
+                      </option>
+                      <option value="desactivados" className="bg-slate-900">
+                        Solo desactivados
+                      </option>
+                    </select>
 
-                  <button
-                    onClick={deactivateSelectedGames}
-                    className="rounded-xl bg-red-500/20 px-4 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
-                  >
-                    Desactivar seleccionados ({selectedGameIds.length})
-                  </button>
+                    <button
+                      onClick={toggleSelectAllAdminGames}
+                      className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-white/20"
+                    >
+                      Seleccionar / quitar filtrados
+                    </button>
+
+                    <button
+                      onClick={() => updateSelectedGamesStatus(true)}
+                      className="rounded-xl bg-green-500/20 px-4 py-2 text-sm font-bold text-green-200 hover:bg-green-500/30"
+                    >
+                      Activar seleccionados ({selectedGameIds.length})
+                    </button>
+
+                    <button
+                      onClick={() => updateSelectedGamesStatus(false)}
+                      className="rounded-xl bg-red-500/20 px-4 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
+                    >
+                      Desactivar seleccionados ({selectedGameIds.length})
+                    </button>
+                  </div>
 
                   <span className="text-sm text-slate-400">
-                    Multirregistro: permite modificar varios videojuegos
-                    seleccionados.
+                    Multirregistro: selecciona varios videojuegos y cambia su
+                    estado en una sola operación.
                   </span>
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[980px] border-collapse">
+                  <table className="w-full min-w-[1050px] border-collapse">
                     <thead>
                       <tr className="border-b border-white/10 text-left text-sm text-slate-400">
                         <th className="p-3">Sel.</th>
                         <th className="p-3">ID</th>
+                        <th className="p-3">Estado</th>
                         <th className="p-3">Título</th>
                         <th className="p-3">Categoría</th>
                         <th className="p-3">Desarrollador</th>
@@ -2219,10 +2344,12 @@ export default function Home() {
                     </thead>
 
                     <tbody>
-                      {games.map((game) => (
+                      {filteredAdminGames.map((game) => (
                         <tr
                           key={game.id_videojuego}
-                          className="border-b border-white/10 align-top"
+                          className={`border-b border-white/10 align-top ${
+                            game.activo ? "" : "bg-red-500/5 opacity-80"
+                          }`}
                         >
                           <td className="p-3">
                             <input
@@ -2237,6 +2364,18 @@ export default function Home() {
                           </td>
 
                           <td className="p-3">{game.id_videojuego}</td>
+
+                          <td className="p-3">
+                            <span
+                              className={`rounded-full px-3 py-1 text-xs font-black ${
+                                game.activo
+                                  ? "bg-green-400/20 text-green-200"
+                                  : "bg-red-500/20 text-red-200"
+                              }`}
+                            >
+                              {game.activo ? "Activo" : "Desactivado"}
+                            </span>
+                          </td>
 
                           <td className="p-3 font-bold">
                             {editingGameId === game.id_videojuego ? (
@@ -2438,12 +2577,14 @@ export default function Home() {
                                 </button>
 
                                 <button
-                                  onClick={() =>
-                                    deactivateGame(game.id_videojuego)
-                                  }
-                                  className="rounded-xl bg-red-500/20 px-3 py-2 text-sm font-bold text-red-200 hover:bg-red-500/30"
+                                  onClick={() => toggleSingleGameStatus(game)}
+                                  className={`rounded-xl px-3 py-2 text-sm font-bold ${
+                                    game.activo
+                                      ? "bg-red-500/20 text-red-200 hover:bg-red-500/30"
+                                      : "bg-green-500/20 text-green-200 hover:bg-green-500/30"
+                                  }`}
                                 >
-                                  Desactivar
+                                  {game.activo ? "Desactivar" : "Activar"}
                                 </button>
                               </div>
                             )}
